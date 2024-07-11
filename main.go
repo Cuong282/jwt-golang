@@ -1,61 +1,37 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/jmoiron/sqlx"
+	"golang.org/x/crypto/bcrypt"
+)
+
+var (
+	db    *sqlx.DB
+	errDb error
 )
 
 func main() {
-	// r := gin.Default()
-	// r.GET("/ping", func(c *gin.Context) {
-	// 	c.JSON(200, gin.H{
-	// 		"message": "pong",
-	// 	})
-	// })
-	// r.Run()
-	// db, err := sqlx.Open("mysql", "root:123456@tcp(127.0.0.1:3306)/login")
-	// fmt.Println("connect seccest", db, err)
-	// if err != nil {
-	// 	panic("Failed to connect to login")
-	// }
-	// defer db.Close()
-	// Khởi tạo dữ liệu người dùng
-	// user := &Credentials{
-	// 	Username: "cuong",
-	// 	Password: "123456",
-	// }
 
-	// Câu lệnh SQL chèn dữ liệu với tham số được đặt tên
-	// query := `INSERT INTO loginn(Username, Password) VALUES  (?, ?)`
-	// db.MustExec(query, "cuong", "123456")
-	// log.Println("User inserted successfully")
-
-	// var user Credentials
-	// err = db.Get(&user, "SELECT id, username, password FROM users WHERE username=?", "user1")
-	// if err == nil {
-
-	// 	fmt.Println("err !!!")
-
-	// } else {
-	// 	fmt.Println("no user fould")
-	// }
-
-	// user.Password = "newpassword"
-	// _, err = db.NamedExec(`UPDATE users SET Password=:password WHERE Username=:username`, &user)
-	// if err != nil {
-	// 	log.Fatalln(err)
-	// }
-	// fmt.Println("User updated successfully")
-	// Thực thi câu lệnh SQL với NamedExec
-
-	// defer db.Close()
-	http.HandleFunc("/signin", Signin)
+	db, errDb = sqlx.Open("mysql", "root:123456@tcp(127.0.0.1:3306)/login")
+	fmt.Println("connect seccest", db, errDb)
+	if errDb != nil {
+		panic("Failed to connect to login")
+	}
+	defer db.Close()
+	fmt.Println("db: ", db)
+	http.HandleFunc("/signup", signupHandler)
+	// http.HandleFunc("/signupp", SignUp)
+	http.HandleFunc("/signin", signin)
 	http.HandleFunc("/welcome", welcome)
 	http.HandleFunc("/refresh", Refresh)
 	http.HandleFunc("/logout", Logout)
@@ -65,27 +41,104 @@ func main() {
 
 var jwtKey = []byte("my_secret_key")
 
-var users = map[string]string{
-	"user1": "cuong",
-	"user2": "123456",
-}
-
 // Create a struct that models the structure of a user, both in the request body, and in the DB
 type Credentials struct {
+	Email    string `json:"email"`
 	Password string `json:"password"`
-	Username string `json:"username"`
 }
 
 type Claims struct {
-	Username string `json:"username"`
+	Email string `json:"email"`
 	jwt.RegisteredClaims
 }
 
-func Signin(w http.ResponseWriter, r *http.Request) {
-	// Khai báo một biến để giữ thông tin đăng nhập được giải mã
+type User struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+// func test(a int) {
+// 	fmt.Println(a)
+// 	if a == 5 {
+// 		fmt.Println("a=5")
+// 		return
+// 	}
+// 	fmt.Println("a != 5")
+// 	return
+// }
+
+var users = map[string]User{}
+
+func signupHandler(w http.ResponseWriter, r *http.Request) {
+	var user User
+
+	err := json.NewDecoder(r.Body).Decode(&user)
+	fmt.Println("err:", err)
+	fmt.Println("user:", user)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Check if the email is valid
+	if !strings.HasSuffix(user.Email, "@gmail.com") {
+		fmt.Println("loi~ emal")
+		http.Error(w, "Email must be a Gmail address", http.StatusBadRequest)
+		return
+	}
+
+	// Check if the email is already in use
+	if _, ok := users[user.Email]; ok {
+		fmt.Println("email ko ton tai")
+		http.Error(w, "Email already in use", http.StatusConflict)
+		return
+	}
+
+	// Check if the password is strong enough
+	if len(user.Password) <= 6 {
+		fmt.Println("len:", len(user.Password))
+		http.Error(w, "OK", http.StatusBadRequest)
+		return
+	}
+
+	// Hash the password
+	hash, err := bcrypt.GenerateFromPassword([]byte(user.Password), 12)
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	user.Password = string(hash)
+	fmt.Println("hash:", hash)
+
+	fmt.Println("userrrrr:", user)
+	email := user.Email
+	fmt.Println("email:", email)
+	password := user.Password
+	fmt.Println("password:", password)
+	fmt.Println("db", db)
+
+	query := `INSERT INTO user (email, password) VALUES (?,?)`
+	fmt.Println("query:", query)
+	fmt.Println("values:", user.Email, user.Password)
+
+	result, err := db.Exec(query, user.Email, user.Password)
+	if err != nil {
+		fmt.Println("error:", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	id, err := result.LastInsertId()
+	fmt.Printf("id inserted: %d, err: %v\n", id, err)
+
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, "User created successfully!")
+}
+
+func signin(w http.ResponseWriter, r *http.Request) {
 	var creds Credentials
 
-	// Giải mã nội dung JSON từ request body vào biến 'creds'
 	err := json.NewDecoder(r.Body).Decode(&creds)
 	if err != nil {
 		// Nếu có lỗi khi giải mã request body, trả về mã lỗi HTTP 400 Bad Request
@@ -93,50 +146,60 @@ func Signin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Lấy mật khẩu dự kiến từ map 'user' dựa trên username đã nhận
-	expectedPassword, ok := users[creds.Username]
-
-	// Nếu username không tồn tại trong map hoặc mật khẩu không khớp
-	if !ok || expectedPassword != creds.Password {
-		// Trả về mã lỗi HTTP 401 Unauthorized
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
-
-	// Thiết lập thời gian hết hạn của token là 5 phút kể từ hiện tại
-	expirationTime := time.Now().Add(5 * time.Minute)
-
-	// Tạo các yêu cầu JWT, bao gồm username và thời gian hết hạn
-	claims := &Claims{
-		Username: creds.Username,
-		RegisteredClaims: jwt.RegisteredClaims{
-			// Thiết lập thời gian hết hạn của token
-			ExpiresAt: jwt.NewNumericDate(expirationTime),
-		},
-	}
-
-	// Tạo token JWT với phương thức ký hiệu và các yêu cầu
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-
-	// Ký token với khóa bí mật để lấy chuỗi token hoàn chỉnh
-	tokenString, err := token.SignedString(jwtKey)
+	// Check if the email exists in the database
+	var userEmail string
+	err = db.QueryRow("SELECT email FROM user WHERE email =?", creds.Email).Scan(&userEmail)
 	if err != nil {
-		// Nếu có lỗi khi ký token, trả về mã lỗi HTTP 500 Internal Server Error
-		w.WriteHeader(http.StatusInternalServerError)
+		if err == sql.ErrNoRows {
+			http.Error(w, "Invalid email or password", http.StatusUnauthorized)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Thiết lập cookie HTTP chứa token JWT với thời gian hết hạn đã chỉ định
-	http.SetCookie(w, &http.Cookie{
-		Name:    "token",
-		Value:   tokenString,
-		Expires: expirationTime,
+	// If the email exists, check the password
+	if userEmail == creds.Email {
+		var user User
+		err = db.QueryRow("SELECT password FROM user WHERE email =?", creds.Email).Scan(&user.Password)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		fmt.Println("user:", user)
+		// Check if the password is correct
+		err = bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(creds.Password))
+		if err != nil {
+			http.Error(w, "Invalid email or password", http.StatusUnauthorized)
+			return
+		}
+		fmt.Println("err:", err)
+
+	}
+
+	// Generate a JWT token
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, Claims{
+		Email: creds.Email,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour * 24)),
+		},
 	})
+	fmt.Println("token:", token)
+	tokenString, err := token.SignedString([]byte("secret"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	fmt.Println("tokenstring:", tokenString)
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, tokenString)
 }
 
 func welcome(w http.ResponseWriter, r *http.Request) {
 	// Lấy cookie tên "token" từ yêu cầu
+
 	c, err := r.Cookie("token")
+	fmt.Printf("c: %v, err: %v\n", c, err)
 	if err != nil {
 		if err == http.ErrNoCookie {
 			// Nếu cookie không tồn tại, trả về mã trạng thái 401 (Unauthorized)
@@ -150,13 +213,14 @@ func welcome(w http.ResponseWriter, r *http.Request) {
 
 	// Lấy giá trị của token từ cookie
 	tknStr := c.Value
+	fmt.Printf("tokenStr: %s, err: %v\n", tknStr, err)
 	claims := &Claims{}
 
 	// Phân tích JWT và lưu trữ thông tin vào `claims`
 	tkn, err := jwt.ParseWithClaims(tknStr, claims, func(token *jwt.Token) (any, error) {
 		return jwtKey, nil
 	})
-
+	fmt.Printf("tkn: %s, err: %v\n", tknStr, err)
 	if err != nil {
 		if err == jwt.ErrSignatureInvalid {
 			w.WriteHeader(http.StatusUnauthorized)
@@ -169,9 +233,8 @@ func welcome(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-	// Finally, return the welcome message to the user, along with their
-	// username given in the token
-	w.Write([]byte(fmt.Sprintf("Welcome %s!", claims.Username)))
+
+	w.Write([]byte(fmt.Sprintf("Welcome %s!", claims.Email)))
 }
 func Refresh(w http.ResponseWriter, r *http.Request) {
 	c, err := r.Cookie("token")
