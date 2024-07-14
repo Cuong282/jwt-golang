@@ -22,14 +22,14 @@ var (
 
 func main() {
 
-	db, errDb = sqlx.Open("mysql", "root:123456@tcp(127.0.0.1:3306)/login")
+	db, errDb = sqlx.Open("mysql", "root:123456@tcp(127.0.0.1:3306)/database")
 	fmt.Println("connect seccest", db, errDb)
 	if errDb != nil {
 		panic("Failed to connect to login")
 	}
 	defer db.Close()
 	fmt.Println("db: ", db)
-	http.HandleFunc("/signup", signupHandler)
+	http.HandleFunc("/signup", signup)
 	// http.HandleFunc("/signupp", SignUp)
 	http.HandleFunc("/signin", signin)
 	http.HandleFunc("/welcome", welcome)
@@ -39,7 +39,7 @@ func main() {
 	log.Fatal(http.ListenAndServe(":8000", nil))
 }
 
-var jwtKey = []byte("my_secret_key")
+var jwtKey = []byte("secret_key")
 
 // Create a struct that models the structure of a user, both in the request body, and in the DB
 type Credentials struct {
@@ -57,22 +57,13 @@ type User struct {
 	Password string `json:"password"`
 }
 
-// func test(a int) {
-// 	fmt.Println(a)
-// 	if a == 5 {
-// 		fmt.Println("a=5")
-// 		return
-// 	}
-// 	fmt.Println("a != 5")
-// 	return
-// }
-
 var users = map[string]User{}
 
-func signupHandler(w http.ResponseWriter, r *http.Request) {
+func signup(w http.ResponseWriter, r *http.Request) {
 	var user User
 
 	err := json.NewDecoder(r.Body).Decode(&user)
+
 	fmt.Println("err:", err)
 	fmt.Println("user:", user)
 	if err != nil {
@@ -102,7 +93,7 @@ func signupHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Hash the password
-	hash, err := bcrypt.GenerateFromPassword([]byte(user.Password), 12)
+	hash, err := bcrypt.GenerateFromPassword([]byte(user.Password), 10)
 
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -146,7 +137,6 @@ func signin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if the email exists in the database
 	var userEmail string
 	err = db.QueryRow("SELECT email FROM user WHERE email =?", creds.Email).Scan(&userEmail)
 	if err != nil {
@@ -158,7 +148,6 @@ func signin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If the email exists, check the password
 	if userEmail == creds.Email {
 		var user User
 		err = db.QueryRow("SELECT password FROM user WHERE email =?", creds.Email).Scan(&user.Password)
@@ -167,7 +156,6 @@ func signin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		fmt.Println("user:", user)
-		// Check if the password is correct
 		err = bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(creds.Password))
 		if err != nil {
 			http.Error(w, "Invalid email or password", http.StatusUnauthorized)
@@ -177,37 +165,41 @@ func signin(w http.ResponseWriter, r *http.Request) {
 
 	}
 
-	// Generate a JWT token
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, Claims{
+	expirationTime := time.Now().Add(5 * time.Minute)
+	claims := &Claims{
 		Email: creds.Email,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour * 24)),
+			ExpiresAt: jwt.NewNumericDate(expirationTime),
 		},
-	})
-	fmt.Println("token:", token)
-	tokenString, err := token.SignedString([]byte("secret"))
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString(jwtKey)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	fmt.Println("tokenstring:", tokenString)
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, tokenString)
+	http.SetCookie(w, &http.Cookie{
+		Name:     "token",
+		Value:    tokenString,
+		Expires:  expirationTime,
+		HttpOnly: true,
+	})
+
 }
 
 func welcome(w http.ResponseWriter, r *http.Request) {
 	// Lấy cookie tên "token" từ yêu cầu
-
 	c, err := r.Cookie("token")
+	fmt.Println("tokéntring:", c)
 	fmt.Printf("c: %v, err: %v\n", c, err)
 	if err != nil {
 		if err == http.ErrNoCookie {
 			// Nếu cookie không tồn tại, trả về mã trạng thái 401 (Unauthorized)
-			w.WriteHeader(http.StatusUnauthorized)
+			http.Error(w, "401", http.StatusUnauthorized)
 			return
 		}
 		// Nếu có lỗi khác khi lấy cookie, trả về mã trạng thái 400 (Bad Request)
-		w.WriteHeader(http.StatusBadRequest)
+		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
 
@@ -217,20 +209,20 @@ func welcome(w http.ResponseWriter, r *http.Request) {
 	claims := &Claims{}
 
 	// Phân tích JWT và lưu trữ thông tin vào `claims`
-	tkn, err := jwt.ParseWithClaims(tknStr, claims, func(token *jwt.Token) (any, error) {
+	tkn, err := jwt.ParseWithClaims(tknStr, claims, func(token *jwt.Token) (interface{}, error) {
 		return jwtKey, nil
 	})
 	fmt.Printf("tkn: %s, err: %v\n", tknStr, err)
 	if err != nil {
 		if err == jwt.ErrSignatureInvalid {
-			w.WriteHeader(http.StatusUnauthorized)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
-		w.WriteHeader(http.StatusBadRequest)
+		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
 	if !tkn.Valid {
-		w.WriteHeader(http.StatusUnauthorized)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
